@@ -1,0 +1,5 @@
+boto3==1.12.22
+botocore==1.15.22
+fabulous==0.3.0
+pyfiglet==0.8.post1
+PyInquirer==1.0.3
