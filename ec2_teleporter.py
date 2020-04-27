@@ -181,14 +181,17 @@ def stop_instance(session,instance):
         waiter.wait(InstanceIds=[instance["InstanceId"]]) 
     log(f"{instance_id} has been stopped")
   
-def get_vpc(session):
+def get_vpc(session,az_id = None):
     """
     get vpc information with subnet info and security group info
     """
     client = session.client("ec2")
     vpcs = client.describe_vpcs()["Vpcs"]
     def mapVpcs(x):
-        subnets = client.describe_subnets(Filters=[{"Name": "vpc-id","Values":[x["VpcId"]]}])["Subnets"]
+        subnet_filters = [{"Name": "vpc-id", "Values":[x["VpcId"]]}]
+        if az_id:
+            subnet_filters.append({"Name": "availability-zone-id", "Values": [az_id]})
+        subnets = client.describe_subnets(Filters=subnet_filters)["Subnets"]
         sgs =  client.describe_security_groups(Filters=[{"Name": "vpc-id","Values":[x["VpcId"]]}])["SecurityGroups"]
         x["Subnets"] = subnets
         x["SecurityGroups"] = sgs
@@ -289,6 +292,18 @@ def inquire_sg(sgs):
     sg = "".join(prompt(sg_questions, style=style)["sg"][0].split()[1:])
     return sg
 
+def inquire_instance_type():
+    questions = [
+        {
+            'type': 'input',
+            'message': 'Input Instance Type. Source instance type will be used otherwise.',
+            'name': 'instance_type',
+        }
+    ]    
+    instance_type = prompt(questions, style=style)["instance_type"]
+    instance_type = instance_type if instance_type != "" else None
+    return instance_type
+
 def inquire_profile(session):
     profiles = session.client("iam").list_instance_profiles()["InstanceProfiles"]
     def mapProfiles(x):        
@@ -305,6 +320,32 @@ def inquire_profile(session):
     ]    
     profile = "".join(prompt(profile_questions, style=style)["profile"][0].split()[0])
     return profile 
+
+def inquire_dedicated_host(session):
+    hosts = [{"name" : h["HostId"], 'az_id': h["AvailabilityZoneId"], 'cpu': h["AvailableCapacity"]["AvailableVCpus"], 'family':  h["HostProperties"]["InstanceFamily"]} for h in session.client("ec2").describe_hosts()["Hosts"]]
+    hosts_options = [{"name" : f'{h["name"]}, {h["cpu"]} vcpus available, {h["family"]} family type'} for h in hosts]
+    host_questions = [
+        {
+            'type': 'checkbox',
+            'message': 'Select Dedicated Host',
+            'name': 'host',
+            'choices': hosts_options
+        }
+    ]    
+    host = prompt(host_questions, style=style)["host"][0].split(',')[0].strip()
+    return [h for h in hosts if h['name'] == host][0]
+
+def inquire_deploy_type():
+    deploy_questions = [
+        {
+            'type': 'checkbox',
+            'message': 'Select Deploy Type',
+            'name': 'type',
+            'choices': [{"name": "dedicated host"}, {"name": "dedicated instance"}, {"name": "on demand"}]
+        }
+    ]    
+    deploy_type = prompt(deploy_questions, style=style)["type"][0]
+    return deploy_type 
     
 def inquire_kms(session,encrypted):
     continue_inquire = True
@@ -321,10 +362,11 @@ def inquire_kms(session,encrypted):
         continue_inquire = value
     if not continue_inquire:
         return False
-    kms = session.client("kms").list_keys()["Keys"]
-    def map_kms(x):        
+    kms = [(k["KeyId"],session.client('kms').list_aliases(KeyId=k["KeyId"])["Aliases"][0]["AliasName"]) for k in session.client("kms").list_keys()["Keys"]]
+    def map_kms(x): 
+        id,alias = x       
         return {
-            "name": x["KeyArn"] + " " + x["KeyId"]
+            "name": alias + " " + id
         }
     kms_questions = [
         {
@@ -338,10 +380,11 @@ def inquire_kms(session,encrypted):
     return kms  
 
 def inquire_region_kms(session,dst_account):
-    kms = session.client("kms").list_keys()["Keys"]
-    def map_kms(x):        
+    kms = [(k["KeyId"],session.client('kms').list_aliases(KeyId=k["KeyId"])["Aliases"][0]["AliasName"]) for k in session.client("kms").list_keys()["Keys"]]
+    def map_kms(x):
+        id,alias = x        
         return {
-            "name": x["KeyArn"] + " " + x["KeyId"]
+            "name": alias + " " + id
         }
     kms_questions = [
         {
@@ -375,9 +418,14 @@ def write_title(title):
     f = Figlet(font='slant')
     print(f.renderText(title))
 
-def deploy_instance(session,ami,instanceType,tags,mappings,subnet,security_group,profile):
+def deploy_instance(session,ami,instanceType,tags,mappings,subnet,security_group,profile,host,deploy_type):
         client = session.client('ec2')
+        tenancy = 'host' if deploy_type == "dedicated host" else 'dedicated' if deploy_type == 'dedicated instance' else 'default'
+        placement_options = {'Tenancy':tenancy}
+        if tenancy == 'host':
+            placement_options["HostId"] = host
         result = client.run_instances(
+            Placement=placement_options,
             BlockDeviceMappings=mappings,
             ImageId=ami,
             InstanceType=instanceType,
@@ -411,13 +459,20 @@ def get_sessions():
 def get_account_ids(accounts):
     return (x.client('sts').get_caller_identity()["Account"] for x in accounts)
 def get_destinfo(sess,encrypted):
-    vpcs = get_vpc(sess)    
+    deploy_type = inquire_deploy_type()
+    az_id = None
+    host = None
+    if deploy_type == "dedicated host":
+        host = inquire_dedicated_host(sess)
+        host = host["name"]
+        az_id = host["az_id"]
+    vpcs = get_vpc(sess,az_id)    
     vpc = inquire_vpc(vpcs)
     subnet = inquire_subnet([i for i in vpcs if i["VpcId"] == vpc][0]["Subnets"])
     security_group = inquire_sg([i for i in vpcs if i["VpcId"] == vpc][0]["SecurityGroups"])
     profile = inquire_profile(sess)
     kms = inquire_kms(sess,encrypted)
-    return (vpc,subnet,security_group,profile,kms)
+    return (vpc,subnet,security_group,profile,kms,host,deploy_type)
 
 if __name__ == "__main__":
     write_title('EC2 Teleporter')
@@ -436,7 +491,7 @@ if __name__ == "__main__":
     original_mappings = describe_ami_blockdevicemappings(src_pro,original_ami)
 
     # GET DESTINATION INFORMATION    
-    (vpc,subnet,security_group,profile,kms) = get_destinfo(dst_pro,encrypted) 
+    (vpc,subnet,security_group,profile,kms,host,deploy_type) = get_destinfo(dst_pro,encrypted) 
     region_kms,grant = inquire_region_kms(src_copy_pro,dst_account) if x_region and kms != False and src_account != dst_account else (False,None)
     if grant:
         grant_ids.append(grant)
@@ -445,7 +500,7 @@ if __name__ == "__main__":
     # BASED ON WHETHER COPIED AMI TO NEW REGION 
     mappings = apply_mappings_edits(describe_ami_blockdevicemappings(src_copy_pro if x_region else src_pro,ami),kms)
     share_ami(src_pro,ami,src_account,dst_account,dst_region)
-    confirm_dic = {"vpc": vpc, "subnet": subnet, "security_group": security_group,"profile": profile,"kms": kms}
+    confirm_dic = {"vpc": vpc, "subnet": subnet, "security_group": security_group,"profile": profile,"kms": kms, 'deploy_type': deploy_type, 'host':host}
     confirm_str = '''\
         Teleporter would like to confirm your selections:
                 -----> vpc =            {vpc}
@@ -453,11 +508,15 @@ if __name__ == "__main__":
                 -----> security_group = {security_group}
                 -----> profile =        {profile}
                 -----> kms =            {kms}
+                -----> deploy type  =   {deploy_type}
+                -----> host  =          {host}
           Are these right? Press 'n' to pull the eject cord
         '''.format(**confirm_dic)
     confirm(string=confirm_str,eject=True)
     # DEPLOY INSTANCE IN DESTINATION
-    new_instance = deploy_instance(dst_pro,ami,instance["InstanceType"],instance["Tags"],mappings,subnet,security_group,profile)
+    instance_type = inquire_instance_type()
+    instance_type = instance_type if instance_type else instance["InstanceType"]
+    new_instance = deploy_instance(dst_pro,ami,instance_type,instance["Tags"],mappings,subnet,security_group,profile,host,deploy_type)
     log(f"Instance has been teleported.")
     log(f"Instance id is {new_instance}")
     # TAG ATTACHED EBS VOLUMES

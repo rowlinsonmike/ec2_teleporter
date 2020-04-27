@@ -51,8 +51,10 @@ python ec2_teleporter.py
 | teleport unencrypted/encrypted instance same region cross account                            |        ✅
 | teleport unencrypted/encrypted instance cross region cross account                           |        ✅
 | delete resources (AMIs,snapshots,instance) after teleport                                    |        ✅
+| Ability to teleport to/from a dedicated host                                                 |        ✅        
+| Ability to teleport to/from a dedicated instance                                             |        ✅        
+| Ability to update instance type                                                              |        ✅        
 | Ability to teleport ephemeral instances                                                      |        ❌        
-| Ability to teleport to a dedicated host                                                      |        ❌        
 | Ability to teleport from AMI instead of instance                                             |        ❌    
 | Ability to teleport a default encrypted instance                                             |        ❌ 
 | Ability to use IAM roles instead of profiles                                                 |        ❌ 
