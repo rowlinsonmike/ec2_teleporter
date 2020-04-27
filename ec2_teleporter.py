@@ -362,9 +362,10 @@ def inquire_kms(session,encrypted):
         continue_inquire = value
     if not continue_inquire:
         return False
-    kms = [(k["KeyId"],session.client('kms').list_aliases(KeyId=k["KeyId"])["Aliases"][0]["AliasName"]) for k in session.client("kms").list_keys()["Keys"]]
+    kms = [(k["KeyId"],session.client('kms').list_aliases(KeyId=k["KeyId"])["Aliases"]) for k in session.client("kms").list_keys()["Keys"]]
     def map_kms(x): 
-        id,alias = x       
+        id,alias = x   
+        alias = "No Alias" if len(alias) == 0 else alias[0]["AliasName"]  
         return {
             "name": alias + " " + id
         }
